@@ -1,4 +1,4 @@
 #pragma once
+#include <Arduino.h>
 
-void setupAudioEngine();
 void audioTask(void *pvParameters);

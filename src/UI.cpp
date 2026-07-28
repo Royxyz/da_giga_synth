@@ -1,83 +1,95 @@
 #include "UI.h"
 #include "GlobalState.h"
-#include "PatternSequencer.h"
-#include "Presets.h"
+#include <Arduino.h>
+#include <Bounce2.h>
 
-// Pin definitions (Pots only)
-const int PIN_POT_TIMBRE = 7;
-const int PIN_POT_COLOR  = 8;
-const int PIN_POT_ENV    = 9;
-const int PIN_POT_FILTER = 10;
-const int PIN_POT_DENSITY  = 11;
-const int PIN_POT_POSITION = 12;
-const int PIN_POT_MIX      = 13;
+const int POT_PINS[7] = {7, 8, 9, 10, 11, 12, 13};
 
-INoteSource* noteSource;
-PresetManager presetManager;
-SynthPreset currentPreset;
+#define ENCODER_PIN_A 14
+#define ENCODER_PIN_B 15
+#define ENCODER_SW 16
 
-void setupUI() {
-    // Configure pot pins
-    pinMode(PIN_POT_TIMBRE, INPUT);
-    pinMode(PIN_POT_COLOR, INPUT);
-    pinMode(PIN_POT_ENV, INPUT);
-    pinMode(PIN_POT_FILTER, INPUT);
-    pinMode(PIN_POT_DENSITY, INPUT);
-    pinMode(PIN_POT_POSITION, INPUT);
-    pinMode(PIN_POT_MIX, INPUT);
+#define BTN_1 17
+#define BTN_2 18
+#define BTN_3 21
+#define BTN_4 38
+
+Bounce2::Button btn1 = Bounce2::Button();
+Bounce2::Button btn2 = Bounce2::Button();
+Bounce2::Button btn3 = Bounce2::Button();
+Bounce2::Button btn4 = Bounce2::Button();
+Bounce2::Button encSw = Bounce2::Button();
+
+// Smoothing variables to prevent crackling from knob jumps
+float sRoot = 50.0f;
+float sSpread = 0.0f;
+
+int lastEncoderState;
+int octaveShift = 0;
+
+void initUI() {
+    for (int i = 0; i < 7; i++) pinMode(POT_PINS[i], INPUT);
     
-    // Initialize NVS storage and load Preset 0 directly
-    presetManager.begin();
-    presetManager.loadPreset(0, currentPreset);
-    
-    // Push Preset 0's core DNA into the volatile global state
-    globalState.algorithm = currentPreset.algorithm;
-    globalState.op2_ratio = currentPreset.op2_ratio;
-    globalState.op3_ratio = currentPreset.op3_ratio;
-    globalState.op4_ratio = currentPreset.op4_ratio;
-    globalState.max_mod_index = currentPreset.max_mod_index;
+    pinMode(ENCODER_PIN_A, INPUT_PULLUP);
+    pinMode(ENCODER_PIN_B, INPUT_PULLUP);
 
-    // Inject our Pattern Sequencer at 120 BPM
-    noteSource = new PatternSequencer(30); 
+    btn1.attach(BTN_1, INPUT_PULLUP);
+    btn2.attach(BTN_2, INPUT_PULLUP);
+    btn3.attach(BTN_3, INPUT_PULLUP);
+    btn4.attach(BTN_4, INPUT_PULLUP);
+    encSw.attach(ENCODER_SW, INPUT_PULLUP);
+
+    btn1.interval(15); btn2.interval(15); btn3.interval(15); btn4.interval(15); encSw.interval(15);
+    btn1.setPressedState(LOW); btn2.setPressedState(LOW); btn3.setPressedState(LOW); btn4.setPressedState(LOW); encSw.setPressedState(LOW);
+
+    lastEncoderState = digitalRead(ENCODER_PIN_A);
 }
 
 void uiTask(void *pvParameters) {
-    // Timer for non-blocking serial prints
-    static uint32_t last_print_time = 0;
+    initUI();
 
-    for (;;) {
-        // 1. Read pots and update global state
-        globalState.fm_timbre = analogRead(PIN_POT_TIMBRE); 
-        globalState.fm_color = analogRead(PIN_POT_COLOR);
-        globalState.env_shape = analogRead(PIN_POT_ENV);
-        globalState.filter_cutoff = analogRead(PIN_POT_FILTER);
-        globalState.gran_density = analogRead(PIN_POT_DENSITY);
-        globalState.gran_position = analogRead(PIN_POT_POSITION);
-        globalState.engine_mix = analogRead(PIN_POT_MIX);
-        // 2. Process Note Inputs from the Pattern Sequencer
-        noteSource->update();
-        if (noteSource->hasEvent()) {
-            NoteEvent ev = noteSource->popEvent();
-            globalState.active_note = ev.note;
-            globalState.active_velocity = ev.velocity;
+    while (true) {
+        btn1.update(); btn2.update(); btn3.update(); btn4.update(); encSw.update();
+
+        // Toggle mutes on button press
+        if(btn1.pressed()) state.mute1 = !state.mute1;
+        if(btn2.pressed()) state.mute2 = !state.mute2;
+        if(btn3.pressed()) state.mute3 = !state.mute3;
+        if(btn4.pressed()) state.mute4 = !state.mute4;
+        
+        if(encSw.pressed()) octaveShift = 0; // Reset octave
+
+        // Read Encoder
+        int encA = digitalRead(ENCODER_PIN_A);
+        if (encA != lastEncoderState && encA == LOW) {
+            if (digitalRead(ENCODER_PIN_B) == HIGH) octaveShift++;
+            else octaveShift--;
+            octaveShift = constrain(octaveShift, -2, 2);
         }
+        lastEncoderState = encA;
 
-        // 3. --- DIAGNOSTIC PRINT BLOCK ---
-        uint32_t now = millis();
-        if (now - last_print_time >= 500) {
-            last_print_time = now;
-            
-            Serial.printf("POTS -> Timb: %4d | Col: %4d | Env: %4d | Filt: %4d || SEQ -> Note: %3d | Vel: %3d\n",
-                globalState.fm_timbre,
-                globalState.fm_color,
-                globalState.env_shape,
-                globalState.filter_cutoff,
-                globalState.active_note,
-                globalState.active_velocity
-            );
-        }
+        // Read Pots
+        float targetRoot = map(analogRead(POT_PINS[0]), 0, 4095, 30, 300);
+        float targetSpread = analogRead(POT_PINS[1]) / 4095.0f;
+        
+        // Low-pass filter the pots for continuous, crackle-free gliding
+        sRoot += 0.05f * (targetRoot - sRoot);
+        sSpread += 0.05f * (targetSpread - sSpread);
 
-        // Delay to prevent the UI task from tripping the Core 0 watchdog timer
-        vTaskDelay(pdMS_TO_TICKS(10)); 
+        state.detune = map(analogRead(POT_PINS[2]), 0, 4095, 0, 15); 
+        state.fmAmount = map(analogRead(POT_PINS[3]), 0, 4095, 0, 800);
+        state.filterCutoff = map(analogRead(POT_PINS[4]), 0, 4095, 10, 255);
+        state.lfoRate = map(analogRead(POT_PINS[5]), 0, 4095, 1, 80) / 10.0f;
+        
+        state.delayWash = map(analogRead(POT_PINS[6]), 0, 4095, 0, 220); // Max 220 to prevent blown-out feedback
+
+        // Calculate Drone Intervals based on spread and octave
+        float base = sRoot * pow(2, octaveShift);
+        state.freq1 = (int)base;
+        state.freq2 = (int)(base + (sSpread * base * 0.5f)); // Morphs up to a Fifth
+        state.freq3 = (int)(base + (sSpread * base));        // Morphs up to an Octave
+        state.freq4 = (int)(base + (sSpread * base * 1.5f)); 
+
+        vTaskDelay(pdMS_TO_TICKS(15));
     }
 }
