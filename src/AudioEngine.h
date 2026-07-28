@@ -1,4 +1,6 @@
 #pragma once
 #include <Arduino.h>
 
-void audioTask(void *pvParameters);
+// Updated function declarations
+void setupAudioEngine();
+void audioLoopWrapper();

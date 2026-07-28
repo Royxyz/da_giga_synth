@@ -5,13 +5,26 @@
 const int POT_PINS[7] = {7, 8, 9, 10, 11, 12, 13};
 const int BTN_LOCK = 17;
 const int BTN_MUTATE = 18;
+const int BTN_OCT_DOWN = 21; 
+const int BTN_OCT_UP = 38;   
 const int ENC_A = 14;
 const int ENC_B = 15;
 const int ENC_SW = 16;
 
+// ESP32-S3 safe pins with internal pull-ups for FX
+const int BTN_FX_WASH = 45;
+const int BTN_FX_UNISON = 47;
+const int BTN_FX_CHORD = 48;
+
 Bounce2::Button btnLock = Bounce2::Button();
 Bounce2::Button btnMutate = Bounce2::Button();
+Bounce2::Button btnOctDown = Bounce2::Button(); 
+Bounce2::Button btnOctUp = Bounce2::Button();   
 Bounce2::Button btnEnc = Bounce2::Button();
+
+Bounce2::Button btnWash = Bounce2::Button();
+Bounce2::Button btnUnison = Bounce2::Button();
+Bounce2::Button btnChord = Bounce2::Button();
 
 volatile int encoderPos = 0;
 volatile int lastEncoded = 0;
@@ -41,9 +54,29 @@ void initUI() {
     btnMutate.interval(5);
     btnMutate.setPressedState(LOW);
     
+    btnOctDown.attach(BTN_OCT_DOWN, INPUT_PULLUP); 
+    btnOctDown.interval(5);
+    btnOctDown.setPressedState(LOW);
+
+    btnOctUp.attach(BTN_OCT_UP, INPUT_PULLUP);     
+    btnOctUp.interval(5);
+    btnOctUp.setPressedState(LOW);
+    
     btnEnc.attach(ENC_SW, INPUT_PULLUP);
     btnEnc.interval(5);
     btnEnc.setPressedState(LOW);
+
+    btnWash.attach(BTN_FX_WASH, INPUT_PULLUP);
+    btnWash.interval(5);
+    btnWash.setPressedState(LOW);
+
+    btnUnison.attach(BTN_FX_UNISON, INPUT_PULLUP);
+    btnUnison.interval(5);
+    btnUnison.setPressedState(LOW);
+
+    btnChord.attach(BTN_FX_CHORD, INPUT_PULLUP);
+    btnChord.interval(5);
+    btnChord.setPressedState(LOW);
 
     pinMode(ENC_A, INPUT_PULLUP);
     pinMode(ENC_B, INPUT_PULLUP);
@@ -66,10 +99,27 @@ void uiTask(void *pvParameters) {
 
         btnLock.update();
         btnMutate.update();
+        btnOctDown.update(); 
+        btnOctUp.update();   
         btnEnc.update();
+        btnWash.update();
+        btnUnison.update();
+        btnChord.update();
 
         if (btnLock.pressed()) state.lockSequence = !state.lockSequence;
         state.forceMutate = btnMutate.isPressed();
+        
+        if (btnOctDown.pressed() && state.octaveOffset > -3) {
+            state.octaveOffset--;
+        }
+        if (btnOctUp.pressed() && state.octaveOffset < 3) {
+            state.octaveOffset++;
+        }
+
+        // Mutually Exclusive FX Toggling
+        if (btnWash.pressed()) state.activeFX = (state.activeFX == 1) ? 0 : 1;
+        if (btnUnison.pressed()) state.activeFX = (state.activeFX == 2) ? 0 : 2;
+        if (btnChord.pressed()) state.activeFX = (state.activeFX == 3) ? 0 : 3;
         
         if (encoderPos > lastEncPos) {
             state.scaleType++;
