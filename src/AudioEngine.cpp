@@ -3,7 +3,7 @@
 #include "TuringMachine.h"
 
 #define MOZZI_AUDIO_MODE MOZZI_OUTPUT_I2S_DAC
-#define MOZZI_AUDIO_CHANNELS STEREO
+#define MOZZI_AUDIO_CHANNELS 2
 #define MOZZI_AUDIO_RATE 32768
 #define MOZZI_CONTROL_RATE 256
 #define MOZZI_I2S_PIN_BCK 4
@@ -17,14 +17,17 @@
 #include <EventDelay.h>          
 #include <Smooth.h>              
 #include <ADSR.h>
-#include <LowPassFilter.h>
+#include <ResonantFilter.h>
 
 TuringMachine turingSeq;
 Oscil<SAW2048_NUM_CELLS, MOZZI_AUDIO_RATE> aOsc(SAW2048_DATA);
 ADSR<MOZZI_CONTROL_RATE, MOZZI_AUDIO_RATE> envelope;
-LowPassFilter lpf;
+ResonantFilter<LOWPASS, uint16_t> lpf; // Swapped to ResonantFilter
 EventDelay stepTimer;
 Smooth<int> pitchGlide(0.95f);
+
+int currentTargetFreq = 0; 
+
 
 void updateControl() {
     if (stepTimer.ready()) {
@@ -38,7 +41,7 @@ void updateControl() {
         turingSeq.advanceStep(prob, len, state.forceMutate);
         float midiNote = turingSeq.getCurrentMidiNote(state.scaleType);
         
-        pitchGlide.setTarget(mtof(midiNote) * 256);
+        currentTargetFreq = mtof(midiNote) * 256;
         
         envelope.setDecayLevel(0);
         envelope.setDecayTime(map(state.envDecay, 0, 4095, 10, 1000));
@@ -49,8 +52,10 @@ void updateControl() {
     
     float glideFactor = map(state.glide, 0, 4095, 0, 99) / 100.0f;
     pitchGlide.setSmoothness(glideFactor);
-    aOsc.setFreq_Q16n16(pitchGlide.next());
+    int smoothedFreq = pitchGlide.next(currentTargetFreq);
+    aOsc.setFreq_Q16n16(smoothedFreq);
 
+    // ResonantFilter expects uint8_t for both cutoff (0-255) and resonance (0-255)
     uint8_t cutoff = map(state.filterCutoff, 0, 4095, 0, 255);
     uint8_t res = map(state.filterRes, 0, 4095, 0, 255);
     lpf.setCutoffFreqAndResonance(cutoff, res);
@@ -63,7 +68,8 @@ AudioOutput updateAudio() {
     // Apply VCA envelope (shift right to scale back down to 16-bit range)
     int envOutput = (currentSample * envelope.next()) >> 8; 
     
-    return MonoOutput::from16Bit(envOutput); 
+    // Return StereoOutput to match MOZZI_AUDIO_CHANNELS STEREO
+    return StereoOutput::from16Bit(envOutput, envOutput); 
 }
 
 void audioTask(void *pvParameters) {

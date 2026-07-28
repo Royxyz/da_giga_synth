@@ -1,6 +1,4 @@
-#ifndef UI_H
-#define UI_H
+#pragma once
+#include <Arduino.h>
 
 void uiTask(void *pvParameters);
-
-#endif
