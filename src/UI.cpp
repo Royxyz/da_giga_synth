@@ -11,20 +11,15 @@ const int ENC_A = 14;
 const int ENC_B = 15;
 const int ENC_SW = 16;
 
-// ESP32-S3 safe pins with internal pull-ups for FX
-const int BTN_FX_WASH = 45;
-const int BTN_FX_UNISON = 47;
-const int BTN_FX_CHORD = 48;
+// The new Wash button on Pin 45
+const int BTN_FX_WASH = 45;  
 
 Bounce2::Button btnLock = Bounce2::Button();
 Bounce2::Button btnMutate = Bounce2::Button();
 Bounce2::Button btnOctDown = Bounce2::Button(); 
 Bounce2::Button btnOctUp = Bounce2::Button();   
 Bounce2::Button btnEnc = Bounce2::Button();
-
 Bounce2::Button btnWash = Bounce2::Button();
-Bounce2::Button btnUnison = Bounce2::Button();
-Bounce2::Button btnChord = Bounce2::Button();
 
 volatile int encoderPos = 0;
 volatile int lastEncoded = 0;
@@ -70,14 +65,6 @@ void initUI() {
     btnWash.interval(5);
     btnWash.setPressedState(LOW);
 
-    btnUnison.attach(BTN_FX_UNISON, INPUT_PULLUP);
-    btnUnison.interval(5);
-    btnUnison.setPressedState(LOW);
-
-    btnChord.attach(BTN_FX_CHORD, INPUT_PULLUP);
-    btnChord.interval(5);
-    btnChord.setPressedState(LOW);
-
     pinMode(ENC_A, INPUT_PULLUP);
     pinMode(ENC_B, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(ENC_A), encoderISR, CHANGE);
@@ -103,8 +90,6 @@ void uiTask(void *pvParameters) {
         btnOctUp.update();   
         btnEnc.update();
         btnWash.update();
-        btnUnison.update();
-        btnChord.update();
 
         if (btnLock.pressed()) state.lockSequence = !state.lockSequence;
         state.forceMutate = btnMutate.isPressed();
@@ -116,10 +101,9 @@ void uiTask(void *pvParameters) {
             state.octaveOffset++;
         }
 
-        // Mutually Exclusive FX Toggling
-        if (btnWash.pressed()) state.activeFX = (state.activeFX == 1) ? 0 : 1;
-        if (btnUnison.pressed()) state.activeFX = (state.activeFX == 2) ? 0 : 2;
-        if (btnChord.pressed()) state.activeFX = (state.activeFX == 3) ? 0 : 3;
+        if (btnWash.pressed()) {
+            state.activeFX = (state.activeFX == 1) ? 0 : 1; 
+        }
         
         if (encoderPos > lastEncPos) {
             state.scaleType++;

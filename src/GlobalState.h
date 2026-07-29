@@ -14,8 +14,8 @@ struct SynthState {
     volatile bool forceMutate;
     volatile int octaveOffset;
     
-    // 0 = Bypass, 1 = Wash, 2 = Unison, 3 = Rave Chord
-    volatile int activeFX; 
+    // 0 = No FX, 1 = Wash Cloud (Reserving 2 and 3 for future buttons)
+    volatile int activeFX;        
 };
 
 extern SynthState state;
