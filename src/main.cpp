@@ -1,36 +1,22 @@
 #include <Arduino.h>
-#include "UI.h"
 #include "AudioEngine.h"
+#include "UI.h"
 
-TaskHandle_t UI_Task;
-TaskHandle_t Audio_Task;
+TaskHandle_t uiTaskHandle;
 
 void setup() {
     Serial.begin(115200);
 
-    setupUI();
-
+    // Pin UI task to Core 0 
     xTaskCreatePinnedToCore(
-        uiTask,        
-        "UI_Task",     
-        4096,          
-        NULL,          
-        1,             
-        &UI_Task,      
-        0              
+        uiTask, "UI_Task", 4096, NULL, 1, &uiTaskHandle, 0
     );
 
-    xTaskCreatePinnedToCore(
-        audioTask,     
-        "Audio_Task",  
-        8192,          
-        NULL,          
-        configMAX_PRIORITIES - 1, 
-        &Audio_Task,   
-        1              
-    );
+    // Initialize Mozzi hardware and parameters here (runs on Core 1)
+    setupAudioEngine();
 }
 
 void loop() {
-    vTaskDelete(NULL); 
+    // Core 1 natively handles the audio loop and feeds the watchdog
+    audioLoopWrapper(); 
 }

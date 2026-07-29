@@ -1,27 +1,30 @@
 #pragma once
-#include <Arduino.h>
 
 struct SynthState {
-    // Live Potentiometer Values (0 - 4095)
-    volatile int fm_timbre = 0;   
-    volatile int fm_color = 0;    
-    volatile int env_shape = 0;   
-    volatile int filter_cutoff = 4095; 
-    volatile int gran_density = 0;   // Pot 5 (0-4095)
-    volatile int gran_position = 0;  // Pot 6 (0-4095)
-    volatile int engine_mix = 0;     // Pot 7 (0-4095)
-    // Note Data
-    volatile uint8_t active_note = 60;
-    volatile uint8_t active_velocity = 0;
-
+    // Timbre & Chord Pots
+    volatile int osc1Pitch;
+    volatile int osc2Pitch;
+    volatile int osc3Pitch;
+    volatile int wavetableMorph; 
+    volatile int filterCutoff;    
+    volatile int filterRes;       
+    volatile int washMix;        
     
+    // Core Engine States
+    volatile int rootNote;       
+    volatile int activeBank;     
+    volatile bool droneMode;     
+    volatile bool triggerStab;   
 
-    // Loaded Preset DNA (Loaded on boot)
-    volatile uint8_t algorithm = 1;
-    volatile float op2_ratio = 1.0f;
-    volatile float op3_ratio = 3.0f;
-    volatile float op4_ratio = 5.0f;
-    volatile float max_mod_index = 450.0f;
+    // --- NEW: Performance Modifiers ---
+    volatile bool autoChord;      // Triggers stab when twisting pitch pots
+    volatile bool lfoRepeater;    // Trance gate toggle
+    volatile int envShape;        // 0: Pluck, 1: Brass, 2: Pad
+    volatile int lfoTarget;       // 0: Off, 1: Cutoff, 2: Morph, 3: Pitch
+    volatile int glideSpeed;      // 0: Instant, 1: Medium, 2: Slow
+    volatile int activeScale;     // 0: Chromatic, 1: Minor, 2: Major, 3: Phrygian
+    volatile bool washFreeze;     // 100% delay feedback
+    volatile bool subBassDrop;    // Drop Osc 1 by 2 octaves
 };
 
-extern SynthState globalState;
+extern SynthState state;

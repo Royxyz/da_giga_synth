@@ -1,181 +1,256 @@
 #include "AudioEngine.h"
 #include "GlobalState.h"
 
-// --- MOZZI I2S & STEREO CONFIGURATION ---
-// These MUST be defined BEFORE including MozziGuts.h
 #define MOZZI_AUDIO_MODE MOZZI_OUTPUT_I2S_DAC
+#define MOZZI_AUDIO_CHANNELS MOZZI_STEREO 
+#define MOZZI_AUDIO_RATE 32768
+#define MOZZI_CONTROL_RATE 256
 #define MOZZI_I2S_PIN_BCK 4
-#define MOZZI_I2S_PIN_WS 5
+#define MOZZI_I2S_PIN_WS 5     
 #define MOZZI_I2S_PIN_DATA 6
-#define MOZZI_CONTROL_RATE 128 
-#define MOZZI_AUDIO_CHANNELS 2 // THIS enables StereoOutput::from16Bit
 
-#include <MozziGuts.h>
+#include <Mozzi.h>
 #include <Oscil.h>
-#include <tables/sin2048_int8.h>
-#include <Ead.h> 
+#include <ADSR.h>
+#include <ResonantFilter.h>
+#include <EventDelay.h>
 #include <mozzi_midi.h> 
 
-// --- FM ENGINE SETUP ---
-Oscil<SIN2048_NUM_CELLS, AUDIO_RATE> op1(SIN2048_DATA); 
-Oscil<SIN2048_NUM_CELLS, AUDIO_RATE> op2(SIN2048_DATA); 
-Oscil<SIN2048_NUM_CELLS, AUDIO_RATE> op3(SIN2048_DATA); 
-Oscil<SIN2048_NUM_CELLS, AUDIO_RATE> op4(SIN2048_DATA); 
-Ead kEnvelope(AUDIO_RATE);
+// LFO Table for modulation
+#include <tables/sin2048_int8.h>
 
-int mod_index_2 = 0, mod_index_3 = 0, mod_index_4 = 0;
-uint8_t last_played_note = 0;
+// Your Python-Generated 16-bit Banks
+#include "BankAnalog01.h" 
+#include "BankAnalog02.h"
+#include "BankFM.h"
 
-// --- GRANULAR MEMORY SETUP ---
-const int PSRAM_BUFFER_SIZE = 65536; 
-int16_t* granular_buffer;
-volatile uint32_t write_head = 0;    
+// Cast pointers to (const int8_t*) to satisfy Mozzi's constructor constraints
+Oscil<2048, MOZZI_AUDIO_RATE> osc1((const int8_t*)BANK_ANALOG_01[0]);
+Oscil<2048, MOZZI_AUDIO_RATE> osc2((const int8_t*)BANK_ANALOG_02[0]);
+Oscil<2048, MOZZI_AUDIO_RATE> osc3((const int8_t*)BANK_FM[0]);
 
-// --- GRAIN SPAWNER SETUP ---
-const int MAX_GRAINS = 8;
-const int WINDOW_SIZE = 1024;
-uint8_t hann_window[WINDOW_SIZE];
+// Master LFO for Repeater and Parameter Modulation
+Oscil<2048, MOZZI_CONTROL_RATE> modLFO(SIN2048_DATA);
+EventDelay repeaterDelay;
 
-struct Grain {
-    bool active = false;
-    float position = 0; 
-    int length = 0;      
-    int age = 0;         
-};
+ADSR<MOZZI_CONTROL_RATE, MOZZI_AUDIO_RATE> envelope;
+ResonantFilter<LOWPASS> lpf; 
 
-Grain grain_pool[MAX_GRAINS];
-int spawn_timer = 0;
+// Smoothers (Anti-Zipper EWMA)
+float smoothCutoff = 100.0f;
+float smoothMorph = 0.0f;
 
-void initWindowTable() {
-    for (int i = 0; i < WINDOW_SIZE; i++) {
-        hann_window[i] = (uint8_t)(127.5 * (1.0 - cos(2.0 * PI * i / (WINDOW_SIZE - 1))));
+// Glide / Portamento Frequencies
+float currentFreq1 = 65.41f; // C2
+float currentFreq2 = 65.41f;
+float currentFreq3 = 65.41f;
+
+// --- PSRAM CLOUD SETUP ---
+#define CLOUD_BUFFER_SIZE 131072 
+int16_t* psramCloudBuffer = NULL;
+uint32_t cloudWriteHead = 0;
+
+// Helper: Quantize the 0-24 pot values into actual musical scales
+int getQuantizedPitch(int potValue, int scaleType) {
+    if (scaleType == 0) return potValue; // Chromatic
+    
+    int octave = potValue / 7;
+    int degree = potValue % 7;
+    int semitone = 0;
+    
+    if (scaleType == 1) { // Minor (Aeolian)
+        int minScale[] = {0, 2, 3, 5, 7, 8, 10};
+        semitone = minScale[degree];
+    } else if (scaleType == 2) { // Major (Ionian)
+        int majScale[] = {0, 2, 4, 5, 7, 9, 11};
+        semitone = majScale[degree];
+    } else if (scaleType == 3) { // Phrygian
+        int phrygScale[] = {0, 1, 3, 5, 7, 8, 10};
+        semitone = phrygScale[degree];
     }
+    
+    return (octave * 12) + semitone;
 }
 
 void setupAudioEngine() {
-    granular_buffer = (int16_t*) heap_caps_malloc(PSRAM_BUFFER_SIZE * sizeof(int16_t), MALLOC_CAP_SPIRAM);
-    if (granular_buffer != NULL) {
-        memset(granular_buffer, 0, PSRAM_BUFFER_SIZE * sizeof(int16_t));
+    // Envelope initial safety settings
+    envelope.setADLevels(255, 255);
+    
+    // Set fixed Trance Gate / Repeater speed (125ms = 16th notes at 120bpm)
+    repeaterDelay.set(125);
+    modLFO.setFreq(1.5f); // 1.5Hz sweep for the Mod LFO
+
+    // Allocate PSRAM Delay Line
+    psramCloudBuffer = (int16_t*)ps_malloc(CLOUD_BUFFER_SIZE * sizeof(int16_t));
+    if (psramCloudBuffer != NULL) {
+        memset(psramCloudBuffer, 0, CLOUD_BUFFER_SIZE * sizeof(int16_t));
     }
     
-    initWindowTable();
-    startMozzi(MOZZI_CONTROL_RATE); 
+    startMozzi();
 }
 
 void updateControl() {
-    int timbre = globalState.fm_timbre; 
-    int color = globalState.fm_color;   
-    int env_shape = globalState.env_shape; 
-    uint8_t current_note = globalState.active_note;
-    uint8_t velocity = globalState.active_velocity;
-    
-    // --- FM CONTROL ---
-    if (current_note != last_played_note && velocity > 0) {
-        // FIXED: Expanded max decay to 4.5 seconds to prevent notes cutting off during drones
-        unsigned int decay_ms = map(env_shape, 0, 4095, 50, 4500);
-        kEnvelope.start(10, decay_ms); 
-        last_played_note = current_note;
+    // --- 1. Envelope Shapes ---
+    switch(state.envShape) {
+        case 0: // Pluck
+            envelope.setAttackTime(10); envelope.setDecayTime(150);
+            envelope.setSustainLevel(0); envelope.setReleaseTime(50);
+            break;
+        case 1: // Brass
+            envelope.setAttackTime(80); envelope.setDecayTime(200);
+            envelope.setSustainLevel(150); envelope.setReleaseTime(300);
+            break;
+        case 2: // Pad
+            envelope.setAttackTime(800); envelope.setDecayTime(400);
+            envelope.setSustainLevel(200); envelope.setReleaseTime(1500);
+            break;
     }
 
-    float base_freq = mtof(current_note);
-    op1.setFreq(base_freq);
+    // --- 2. Triggers (Manual & Repeater) ---
+    if (state.triggerStab) {
+        envelope.noteOn();
+        state.triggerStab = false; 
+    }
     
-    int ratio_step = map(color, 0, 4095, 1, 5); 
-    op2.setFreq(base_freq * (globalState.op2_ratio * ratio_step));
-    op3.setFreq(base_freq * (globalState.op3_ratio * ratio_step)); 
-    op4.setFreq(base_freq * globalState.op4_ratio);             
-
-    float max_mod = globalState.max_mod_index;
-    mod_index_2 = map(timbre, 0, 4095, 0, (int)max_mod); 
-    mod_index_3 = map(timbre, 0, 4095, 0, (int)(max_mod * 0.5f));
-    mod_index_4 = map(timbre, 0, 4095, 0, (int)(max_mod * 0.25f));
-
-    // --- GRANULAR SPAWN CONTROL ---
-    int density = globalState.gran_density; 
-    int position = globalState.gran_position;
-
-    int spawn_interval = map(density, 0, 4095, 64, 2); 
-
-    if (++spawn_timer >= spawn_interval) {
-        spawn_timer = 0;
-        for (int i = 0; i < MAX_GRAINS; i++) {
-            if (!grain_pool[i].active) {
-                grain_pool[i].active = true;
-                grain_pool[i].age = 0;
-                
-                grain_pool[i].length = map(density, 0, 4095, 8000, 1000); 
-                int base_offset = map(position, 0, 4095, 2000, PSRAM_BUFFER_SIZE - 9000);
-                int random_jitter = random(-500, 500);
-                
-                long start_pos = (write_head - base_offset + random_jitter + PSRAM_BUFFER_SIZE) % PSRAM_BUFFER_SIZE;
-                grain_pool[i].position = (float)start_pos;
-                break; 
-            }
+    if (state.lfoRepeater && !state.droneMode) {
+        if (repeaterDelay.ready()) {
+            envelope.noteOn();
+            repeaterDelay.start();
         }
+    }
+    envelope.update();
+
+    // --- 3. LFO Modulation Engine ---
+    float lfoVal = modLFO.next() / 128.0f; // Scale to roughly -1.0 to 1.0
+    float lfoCutoffMod = (state.lfoTarget == 1) ? lfoVal * 40.0f : 0.0f;
+    float lfoMorphMod  = (state.lfoTarget == 2) ? lfoVal * 2.0f : 0.0f;
+    float lfoPitchMod  = (state.lfoTarget == 3) ? lfoVal * 1.5f : 0.0f; // +/- 1.5 semitones
+
+    // --- 4. Pitch & Glide Processing ---
+    float glideAmount = 0.0f;
+    if (state.glideSpeed == 1) glideAmount = 0.92f; // Medium Glide
+    if (state.glideSpeed == 2) glideAmount = 0.99f; // Sluggish Pad Glide
+
+    // Quantize the pot readings based on the selected scale
+    int qPitch1 = getQuantizedPitch(state.osc1Pitch, state.activeScale);
+    int qPitch2 = getQuantizedPitch(state.osc2Pitch, state.activeScale);
+    int qPitch3 = getQuantizedPitch(state.osc3Pitch, state.activeScale);
+
+    // Apply "Oh Sh*t" Sub-Bass Drop
+    if (state.subBassDrop) qPitch1 -= 24;
+
+    // Calculate Target Frequencies (Root + Quantized + LFO Pitch Mod)
+    float targetFreq1 = mtof(state.rootNote + qPitch1 + lfoPitchMod);
+    float targetFreq2 = mtof(state.rootNote + qPitch2 + lfoPitchMod);
+    float targetFreq3 = mtof(state.rootNote + qPitch3 + lfoPitchMod);
+
+    // EWMA Portamento Glide
+    currentFreq1 = (currentFreq1 * glideAmount) + (targetFreq1 * (1.0f - glideAmount));
+    currentFreq2 = (currentFreq2 * glideAmount) + (targetFreq2 * (1.0f - glideAmount));
+    currentFreq3 = (currentFreq3 * glideAmount) + (targetFreq3 * (1.0f - glideAmount));
+
+    osc1.setFreq(currentFreq1);
+    osc2.setFreq(currentFreq2);
+    osc3.setFreq(currentFreq3);
+
+    // --- 5. Wavetable Bank & Morph Swapping ---
+    float targetMorph = state.wavetableMorph + lfoMorphMod;
+    smoothMorph = (smoothMorph * 0.9f) + (targetMorph * 0.1f);
+    
+    int currentFrame = (int)smoothMorph;
+    if (currentFrame > 7) currentFrame = 7;
+    if (currentFrame < 0) currentFrame = 0;
+
+    const int8_t* targetTable;
+    switch (state.activeBank) {
+        case 0:  targetTable = (const int8_t*)BANK_ANALOG_01[currentFrame]; break;
+        case 1:  targetTable = (const int8_t*)BANK_ANALOG_02[currentFrame]; break;
+        case 2:  targetTable = (const int8_t*)BANK_FM[currentFrame]; break;
+        default: targetTable = (const int8_t*)BANK_ANALOG_01[currentFrame]; break;
+    }
+
+    osc1.setTable(targetTable);
+    osc2.setTable(targetTable);
+    osc3.setTable(targetTable);
+
+    // --- 6. Filter Smoothing ---
+    float targetCutoff = map(state.filterCutoff, 0, 4095, 20, 210);
+    smoothCutoff = (smoothCutoff * 0.92f) + (targetCutoff * 0.08f);
+    
+    // SAFEGUARD 2: Add 0.5f to round the float, preventing truncation micro-jitter
+    int finalCutoff = (int)(smoothCutoff + lfoCutoffMod + 0.5f);
+    if (finalCutoff > 230) finalCutoff = 230; 
+    if (finalCutoff < 5) finalCutoff = 5;
+
+    uint8_t res = map(state.filterRes, 0, 4095, 0, 200); 
+
+    // SAFEGUARD 3: Only update the filter if the value actually changed!
+    // This stops the 256Hz control loop from bleeding into the audio path.
+    static int lastCutoff = -1;
+    static uint8_t lastRes = -1;
+    
+    if (finalCutoff != lastCutoff || res != lastRes) {
+        lpf.setCutoffFreqAndResonance((uint8_t)finalCutoff, res);
+        lastCutoff = finalCutoff;
+        lastRes = res;
     }
 }
 
-AudioOutput_t updateAudio() {
-    // --- 1. COMPUTE FM ENGINE ---
-    int env_level = kEnvelope.next(); 
+AudioOutput updateAudio() {
+    // 1. Sum and scale down to prevent clipping
+    float rawMix = (float)osc1.next() + (float)osc2.next() + (float)osc3.next();
+    int safeMix = (int)(rawMix * 0.3333f); 
     
-    // THE DRONE LATCH: If Pot 3 is turned fully right, bypass the envelope!
-    if (globalState.env_shape > 4000) {
-        env_level = 255; // Infinite, uninterrupted sustain
-    }
-
-    long mod4 = (long)op4.next() * mod_index_4;
-    long mod3 = (long)op3.phMod(mod4) * mod_index_3;
-    long mod2 = (long)op2.phMod(mod3) * mod_index_2;
-    long fm_out = (long)op1.phMod(mod2) * env_level; 
-
-    // --- 2. RECORD TO PSRAM ---
-    if (granular_buffer != NULL) {
-        granular_buffer[write_head] = (int16_t)fm_out;
-        write_head = (write_head + 1) % PSRAM_BUFFER_SIZE;
-    }
-
-    // --- 3. COMPUTE GRANULAR MULTIPLEXING ---
-    long gran_out = 0; 
+    // 2. Filter
+    int filtered = lpf.next(safeMix); 
     
-    for (int i = 0; i < MAX_GRAINS; i++) {
-        if (grain_pool[i].active) {
-            int buffer_idx = (int)grain_pool[i].position;
-            long sample = granular_buffer[buffer_idx];
+    // 3. VCA Routing
+    int vcaOutput = 0;
+    if (state.droneMode) {
+        vcaOutput = filtered; 
+    } else {
+        // Multiply by 8-bit envelope (0-255) and shift down
+        vcaOutput = (filtered * envelope.next()) >> 8; 
+    }
+    
+    int finalOut = vcaOutput;
 
-            int win_idx = (grain_pool[i].age * WINDOW_SIZE) / grain_pool[i].length;
-            if (win_idx >= WINDOW_SIZE) win_idx = WINDOW_SIZE - 1; 
-            
-            long window_val = hann_window[win_idx]; 
+    // 4. PSRAM Ambient Wash
+    if (psramCloudBuffer != NULL) {
+        int tap1 = psramCloudBuffer[(cloudWriteHead - 16384 + CLOUD_BUFFER_SIZE) % CLOUD_BUFFER_SIZE];
+        int tap2 = psramCloudBuffer[(cloudWriteHead - 40000 + CLOUD_BUFFER_SIZE) % CLOUD_BUFFER_SIZE];
+        int tap3 = psramCloudBuffer[(cloudWriteHead - 85000 + CLOUD_BUFFER_SIZE) % CLOUD_BUFFER_SIZE];
+        int tap4 = psramCloudBuffer[(cloudWriteHead - 131000 + CLOUD_BUFFER_SIZE) % CLOUD_BUFFER_SIZE];
 
-            gran_out += (sample * window_val) >> 11;
+        int cloudOut = (tap1 + tap2 + tap3 + tap4) >> 2;
+        float washLevel = state.washMix / 4095.0f;
+        int32_t feedbackSample = 0;
 
-            grain_pool[i].position += 1.0f; 
-            if (grain_pool[i].position >= PSRAM_BUFFER_SIZE) grain_pool[i].position -= PSRAM_BUFFER_SIZE;
-            
-            grain_pool[i].age++;
-            if (grain_pool[i].age >= grain_pool[i].length) {
-                grain_pool[i].active = false;
-            }
+        // "Oh Sh*t" Modifier: Wash Freeze Loop
+        if (state.washFreeze) {
+            // Cut the dry feed, crank the feedback to nearly 100% (254/256)
+            feedbackSample = ((tap4 * 254) >> 8); 
+            finalOut = cloudOut; // Output only the frozen cloud
+        } else {
+            // Normal Wash Operation
+            feedbackSample = (int32_t)(vcaOutput * washLevel) + ((tap4 * 190) >> 8); 
+            finalOut = (int)((vcaOutput * (1.0f - washLevel)) + (cloudOut * washLevel));
         }
+
+        // Hard integer clamp for safety
+        if (feedbackSample > 127) feedbackSample = 127;     // Adjusted clamp for 8-bit
+        if (feedbackSample < -128) feedbackSample = -128;   // Adjusted clamp for 8-bit
+
+        psramCloudBuffer[cloudWriteHead] = (int16_t)feedbackSample;
+        cloudWriteHead = (cloudWriteHead + 1) % CLOUD_BUFFER_SIZE;
     }
 
-    // --- 4. ENGINE MIXER ---
-    long mix_val = globalState.engine_mix; 
-    long dry_level = 4095 - mix_val;
-    long wet_level = mix_val;
-    
-    long final_out = ((fm_out * dry_level) + (gran_out * wet_level)) >> 12;
+    // THE VOLUME FIX: Shift the 8-bit finalOut up to a 16-bit scale!
+    int massive16BitOutput = finalOut << 8;
 
-    if (final_out > 32767) final_out = 32767;
-    if (final_out < -32768) final_out = -32768;
-
-    return StereoOutput::from16Bit((int)final_out, (int)final_out); 
+    return StereoOutput::from16Bit(massive16BitOutput, massive16BitOutput); 
 }
 
-void audioTask(void *pvParameters) {
-    setupAudioEngine();
-    for (;;) {
-        audioHook(); 
-    }
+void audioLoopWrapper() {
+    audioHook();
 }
