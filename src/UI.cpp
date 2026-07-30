@@ -2,9 +2,13 @@
 #include "GlobalState.h"
 #include <Bounce2.h>
 
-const int POT_PINS[7] = {7, 8, 9, 10, 11, 12, 13};
+// --- NEW: 74HC4051 Mux Pins ---
+const int MUX_Z  = 7;  // Common Analog Signal
+const int MUX_S0 = 8;  // Select 0
+const int MUX_S1 = 9;  // Select 1
+const int MUX_S2 = 10; // Select 2
 
-// Group A: Trigger Pad (New Pins)
+// Group A: Trigger Pad 
 const int BTN_STRIKE      = 39; 
 const int BTN_AUTO_CHORD  = 40;
 const int BTN_LFO_REPEAT  = 41;
@@ -44,14 +48,32 @@ void IRAM_ATTR encoderISR() {
     int encoded = (MSB << 1) | LSB;
     int sum  = (lastEncoded << 2) | encoded;
 
+    // Fixed volatile increments for C++ standard compliance
     if(sum == 0b1101 || sum == 0b0100 || sum == 0b0010 || sum == 0b1011) encoderPos = encoderPos + 1;
     if(sum == 0b1110 || sum == 0b0111 || sum == 0b0001 || sum == 0b1000) encoderPos = encoderPos - 1;
     
     lastEncoded = encoded;
 }
 
+// --- NEW: Mux Reading Helper ---
+int readMux(int channel) {
+    // Write binary logic to select pins
+    digitalWrite(MUX_S0, bitRead(channel, 0));
+    digitalWrite(MUX_S1, bitRead(channel, 1));
+    digitalWrite(MUX_S2, bitRead(channel, 2));
+    
+    // Crucial anti-crosstalk delay for the ESP32 ADC capacitor
+    delayMicroseconds(10); 
+    
+    return analogRead(MUX_Z);
+}
+
 void initUI() {
-    for (int i = 0; i < 7; i++) pinMode(POT_PINS[i], INPUT);
+    // Initialize Mux pins
+    pinMode(MUX_Z, INPUT);
+    pinMode(MUX_S0, OUTPUT);
+    pinMode(MUX_S1, OUTPUT);
+    pinMode(MUX_S2, OUTPUT);
     
     for (int i = 0; i < 11; i++) {
         buttons[i].attach(BUTTON_PINS[i], INPUT_PULLUP);
@@ -86,11 +108,12 @@ void uiTask(void *pvParameters) {
     state.activeScale = 0;
 
     for(;;) {
-        // --- 1. Read Pots & Auto-Chord Logic ---
-        int p1 = map(analogRead(POT_PINS[0]), 0, 4095, 0, 24);
-        int p2 = map(analogRead(POT_PINS[1]), 0, 4095, 0, 24);
-        int p3 = map(analogRead(POT_PINS[2]), 0, 4095, 0, 24);
+        // --- 1. Read Pots via 4051 Mux (Channels 0-6) ---
+        int p1 = map(readMux(0), 0, 4095, 0, 24); // Osc 1 Pitch
+        int p2 = map(readMux(1), 0, 4095, 0, 24); // Osc 2 Pitch
+        int p3 = map(readMux(2), 0, 4095, 0, 24); // Osc 3 Pitch
 
+        // Auto-Chord Triggering Logic
         if (state.autoChord && !state.droneMode) {
             if (p1 != lastPitch1 || p2 != lastPitch2 || p3 != lastPitch3) {
                 state.triggerStab = true; 
@@ -100,10 +123,10 @@ void uiTask(void *pvParameters) {
         state.osc1Pitch = p1; state.osc2Pitch = p2; state.osc3Pitch = p3;
         lastPitch1 = p1; lastPitch2 = p2; lastPitch3 = p3;
 
-        state.wavetableMorph = map(analogRead(POT_PINS[3]), 0, 4095, 0, 7); 
-        state.filterCutoff = analogRead(POT_PINS[4]);
-        state.filterRes = analogRead(POT_PINS[5]);
-        state.washMix = analogRead(POT_PINS[6]);
+        state.wavetableMorph = map(readMux(3), 0, 4095, 0, 7); 
+        state.filterCutoff = readMux(4);
+        state.filterRes = readMux(5);
+        state.washMix = readMux(6);
 
         // --- 2. Update All Buttons ---
         for (int i = 0; i < 11; i++) buttons[i].update();
@@ -112,20 +135,20 @@ void uiTask(void *pvParameters) {
         // --- 3. Process Button Presses ---
         
         // Group A: Trigger Pad
-        if (buttons[0].pressed() && !state.droneMode) state.triggerStab = true; // Strike
-        if (buttons[1].pressed()) state.autoChord = !state.autoChord;           // Auto-Chord
-        if (buttons[2].pressed()) state.lfoRepeater = !state.lfoRepeater;       // Repeater
-        if (buttons[3].pressed()) state.envShape = (state.envShape + 1) % 3;    // Env Shape
+        if (buttons[0].pressed() && !state.droneMode) state.triggerStab = true; 
+        if (buttons[1].pressed()) state.autoChord = !state.autoChord;           
+        if (buttons[2].pressed()) state.lfoRepeater = !state.lfoRepeater;       
+        if (buttons[3].pressed()) state.envShape = (state.envShape + 1) % 3;    
 
         // Group B: Core Engine
-        if (buttons[4].pressed()) state.droneMode = !state.droneMode;           // Drone
-        if (buttons[5].pressed()) state.lfoTarget = (state.lfoTarget + 1) % 4;  // LFO Target
-        if (buttons[6].pressed()) state.glideSpeed = (state.glideSpeed + 1) % 3;// Glide
-        if (buttons[7].pressed()) state.activeScale = (state.activeScale + 1) % 4; // Scale
+        if (buttons[4].pressed()) state.droneMode = !state.droneMode;           
+        if (buttons[5].pressed()) state.lfoTarget = (state.lfoTarget + 1) % 4;  
+        if (buttons[6].pressed()) state.glideSpeed = (state.glideSpeed + 1) % 3;
+        if (buttons[7].pressed()) state.activeScale = (state.activeScale + 1) % 4; 
 
         // Group C: Modifiers
-        state.washFreeze = buttons[8].isPressed();  // Momentary Freeze (Hold to loop)
-        state.subBassDrop = buttons[9].isPressed(); // Momentary Sub-Bass (Hold to drop)
+        state.washFreeze = buttons[8].isPressed();  
+        state.subBassDrop = buttons[9].isPressed(); 
         
         if (buttons[10].pressed()) { // SCRAMBLE!
             state.activeBank = random(0, 3);
