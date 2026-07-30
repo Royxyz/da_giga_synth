@@ -10,6 +10,7 @@
 #define MOZZI_I2S_PIN_DATA 6
 
 #include <Mozzi.h>
+#include <Oscil16.h>
 #include <Oscil.h>
 #include <ADSR.h>
 #include <ResonantFilter.h>
@@ -20,15 +21,14 @@
 #include <tables/sin2048_int8.h>
 
 // Your Python-Generated 16-bit Banks
-#include "BankAnalog01.h" 
-#include "BankAnalog02.h"
+#include "BankAnalog.h" 
+#include "BankGrowl.h"
 #include "BankFM.h"
 
-// Cast pointers to (const int8_t*) to satisfy Mozzi's constructor constraints
-Oscil<2048, MOZZI_AUDIO_RATE> osc1((const int8_t*)BANK_ANALOG_01[0]);
-Oscil<2048, MOZZI_AUDIO_RATE> osc2((const int8_t*)BANK_ANALOG_02[0]);
-Oscil<2048, MOZZI_AUDIO_RATE> osc3((const int8_t*)BANK_FM[0]);
-
+// Cast pointers to  to satisfy Mozzi's constructor constraints
+Oscil16<2048, MOZZI_AUDIO_RATE> osc1((const int16_t*)BANK_ANALOG[0]);
+Oscil16<2048, MOZZI_AUDIO_RATE> osc2((const int16_t*)BANK_GROWL[0]);
+Oscil16<2048, MOZZI_AUDIO_RATE> osc3((const int16_t*)BANK_FM[0]);
 // Master LFO for Repeater and Parameter Modulation
 Oscil<2048, MOZZI_CONTROL_RATE> modLFO(SIN2048_DATA);
 EventDelay repeaterDelay;
@@ -161,12 +161,12 @@ void updateControl() {
     if (currentFrame > 7) currentFrame = 7;
     if (currentFrame < 0) currentFrame = 0;
 
-    const int8_t* targetTable;
+    const int16_t* targetTable; 
     switch (state.activeBank) {
-        case 0:  targetTable = (const int8_t*)BANK_ANALOG_01[currentFrame]; break;
-        case 1:  targetTable = (const int8_t*)BANK_ANALOG_02[currentFrame]; break;
-        case 2:  targetTable = (const int8_t*)BANK_FM[currentFrame]; break;
-        default: targetTable = (const int8_t*)BANK_ANALOG_01[currentFrame]; break;
+        case 0:  targetTable = (const int16_t*)BANK_ANALOG[currentFrame]; break;
+        case 1:  targetTable = (const int16_t*)BANK_GROWL[currentFrame]; break;
+        case 2:  targetTable = (const int16_t*)BANK_FM[currentFrame]; break;
+        default: targetTable = (const int16_t*)BANK_ANALOG[currentFrame]; break;
     }
 
     osc1.setTable(targetTable);
@@ -238,17 +238,15 @@ AudioOutput updateAudio() {
         }
 
         // Hard integer clamp for safety
-        if (feedbackSample > 127) feedbackSample = 127;     // Adjusted clamp for 8-bit
-        if (feedbackSample < -128) feedbackSample = -128;   // Adjusted clamp for 8-bit
+       if (feedbackSample > 32760) feedbackSample = 32760;     
+        if (feedbackSample < -32760) feedbackSample = -32760;   
 
         psramCloudBuffer[cloudWriteHead] = (int16_t)feedbackSample;
         cloudWriteHead = (cloudWriteHead + 1) % CLOUD_BUFFER_SIZE;
     }
 
-    // THE VOLUME FIX: Shift the 8-bit finalOut up to a 16-bit scale!
-    int massive16BitOutput = finalOut << 8;
-
-    return StereoOutput::from16Bit(massive16BitOutput, massive16BitOutput); 
+    // REMOVED THE BITSHIFT! Your audio is natively 16-bit now, so pass finalOut directly.
+    return StereoOutput::from16Bit(finalOut, finalOut); 
 }
 
 void audioLoopWrapper() {
