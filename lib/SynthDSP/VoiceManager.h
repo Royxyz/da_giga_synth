@@ -24,12 +24,14 @@ private:
     Voice* voices[MAX_VOICES];
     int tableSize;
     int numFrames;
+    float sampleRate; 
     bool hardSync = false; 
 
 public:
-    VoiceManager(const int16_t* bank1, const int16_t* bank2, int size, int frames) {
+    VoiceManager(const int16_t* bank1, const int16_t* bank2, int size, int frames, float sr = 32768.0f) {
         tableSize = size;
         numFrames = frames;
+        sampleRate = sr;
         for(int i = 0; i < MAX_VOICES; i++) {
             voices[i] = new Voice(bank1, bank2, size, frames);
         }
@@ -64,8 +66,10 @@ public:
         float freq2 = fast_mtof(osc2Pitch);
 
         voices[voiceIdx]->currentNote = note;
-        voices[voiceIdx]->osc1.setFreq(freq1);
-        voices[voiceIdx]->osc2.setFreq(freq2);
+        
+        voices[voiceIdx]->osc1.setFreq(freq1, sampleRate);
+        voices[voiceIdx]->osc2.setFreq(freq2, sampleRate);
+        
         voices[voiceIdx]->ampEnv.noteOn();
     }
 
