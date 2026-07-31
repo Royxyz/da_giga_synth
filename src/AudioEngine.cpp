@@ -114,8 +114,17 @@ void audioTask(void *pvParameters) {
     
     int controlCounter = 0; 
     size_t bytesWritten;
+    
+    // Start at 500 so it DOES NOT print on boot
+    static int printCount = 500; 
 
     for(;;) {
+        // --- NEW: Wait for Python to send a character ---
+        if (Serial.available()) {
+            while(Serial.available()) Serial.read(); // Clear the incoming buffer
+            printCount = 0; // Resetting to 0 triggers the 500-sample dump
+        }
+
         for(int i = 0; i < AUDIO_BUFFER_SIZE; i++) {
             
             if (controlCounter++ >= CONTROL_RATE_DIVIDER) {
@@ -125,11 +134,17 @@ void audioTask(void *pvParameters) {
 
             int16_t out = updateAudio();
             
+            // Only prints when Python asks for it
+            if (printCount < 5000) {
+                Serial.println(out);
+                printCount++;
+            }
+
             i2sBuffer[i * 2] = out;     
             i2sBuffer[(i * 2) + 1] = out; 
         }
 
-        i2s_channel_write(dac.getTxChan(), i2sBuffer, sizeof(i2sBuffer), &bytesWritten, portMAX_DELAY);
+        i2s_channel_write(dac.tx_chan, i2sBuffer, sizeof(i2sBuffer), &bytesWritten, portMAX_DELAY);
     }
 }
 

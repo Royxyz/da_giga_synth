@@ -3,10 +3,10 @@
 #include <driver/i2s_std.h>
 
 class I2SOutput {
-private:
-    i2s_chan_handle_t tx_chan;
+    
 
 public:
+    i2s_chan_handle_t tx_chan;
     // Expose the tx_chan so audioTask can write blocks directly
     i2s_chan_handle_t getTxChan() { return tx_chan; }
 
