@@ -5,7 +5,7 @@ class FloatWavetable {
 private:
     float phase = 0.0f;
     float phaseInc = 0.0f;
-    const int16_t* bank; 
+    const int16_t* bank; // 16-bit pointer
     int tableSize;
     int numFrames;
 
@@ -48,11 +48,11 @@ public:
         if (frameB >= numFrames) frameB = numFrames - 1; 
         float fracY = morphPos - frameA;
 
+        // Scaling 16-bit array data to floats
         float p00 = bank[(frameA * tableSize) + indexA] / 32768.0f;
         float p10 = bank[(frameA * tableSize) + indexB] / 32768.0f;
         float p01 = bank[(frameB * tableSize) + indexA] / 32768.0f;
         float p11 = bank[(frameB * tableSize) + indexB] / 32768.0f;
-
 
         float sampleA = p00 + fracX * (p10 - p00);
         float sampleB = p01 + fracX * (p11 - p01);
