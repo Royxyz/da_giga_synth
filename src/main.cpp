@@ -1,36 +1,39 @@
 #include <Arduino.h>
-#include "UI.h"
 #include "AudioEngine.h"
+#include "UI.h"
+#include "DummySequencer.h"
 
-TaskHandle_t UI_Task;
-TaskHandle_t Audio_Task;
+TaskHandle_t uiTaskHandle;
+TaskHandle_t midiTaskHandle;
+
+
+DummySequencer sequencer;
+
+
+void midiTask(void *pvParameters) {
+    for(;;) {
+        sequencer.update();
+        vTaskDelay(pdMS_TO_TICKS(2)); 
+    }
+}
 
 void setup() {
     Serial.begin(115200);
 
-    setupUI();
+    sequencer.setCallbacks(engineNoteOn, engineNoteOff);
+    sequencer.begin();
 
     xTaskCreatePinnedToCore(
-        uiTask,        
-        "UI_Task",     
-        4096,          
-        NULL,          
-        1,             
-        &UI_Task,      
-        0              
+        uiTask, "UI_Task", 4096, NULL, 1, &uiTaskHandle, 0
+    );
+    
+    xTaskCreatePinnedToCore(
+        midiTask, "MIDI_Task", 2048, NULL, 2, &midiTaskHandle, 0
     );
 
-    xTaskCreatePinnedToCore(
-        audioTask,     
-        "Audio_Task",  
-        8192,          
-        NULL,          
-        configMAX_PRIORITIES - 1, 
-        &Audio_Task,   
-        1              
-    );
+    setupAudioEngine();
 }
 
 void loop() {
-    vTaskDelete(NULL); 
+    audioLoopWrapper(); 
 }

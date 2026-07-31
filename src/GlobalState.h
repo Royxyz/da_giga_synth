@@ -1,27 +1,38 @@
 #pragma once
-#include <Arduino.h>
+#include <atomic>
 
 struct SynthState {
-    // Live Potentiometer Values (0 - 4095)
-    volatile int fm_timbre = 0;   
-    volatile int fm_color = 0;    
-    volatile int env_shape = 0;   
-    volatile int filter_cutoff = 4095; 
-    volatile int gran_density = 0;   // Pot 5 (0-4095)
-    volatile int gran_position = 0;  // Pot 6 (0-4095)
-    volatile int engine_mix = 0;     // Pot 7 (0-4095)
-    // Note Data
-    volatile uint8_t active_note = 60;
-    volatile uint8_t active_velocity = 0;
+    // --- 7 Pots & Encoder (Continuous Floats) ---
+    std::atomic<float> morph1;       // 0.0f to 7.0f (Frames)
+    std::atomic<float> morph2;       // 0.0f to 7.0f (Frames)
+    std::atomic<float> detune2;      // -1.0f to 1.0f (Semitones)
+    std::atomic<float> filterCutoff; // 20.0f to 20000.0f (Hz)
+    std::atomic<float> filterRes;    // 0.0f to 0.99f (Peak)
+    std::atomic<float> modDepth;     // 0.0f to 1.0f
+    std::atomic<float> fxMix;        // 0.0f to 1.0f (Dry/Wet)
+    std::atomic<float> lfoRate;      // 0.1f to 40.0f (Hz)
 
-    
+    // --- 11 Buttons (Discrete States) ---
+    // Oscillators
+    std::atomic<int>  osc1Bank;       // 0: Analog, 1: Growl, 2: FM
+    std::atomic<int>  osc2Bank;
+    std::atomic<int>  osc2OctaveDrop; // 0: Normal, 1: -1 Oct, 2: -2 Oct
+    std::atomic<bool> oscSync;        // Hard sync toggle
 
-    // Loaded Preset DNA (Loaded on boot)
-    volatile uint8_t algorithm = 1;
-    volatile float op2_ratio = 1.0f;
-    volatile float op3_ratio = 3.0f;
-    volatile float op4_ratio = 5.0f;
-    volatile float max_mod_index = 450.0f;
+    // Filter & FX
+    std::atomic<int>  filterMode;     // 0: LP, 1: BP, 2: HP
+    std::atomic<int>  fxMode;         // 0: Tape, 1: Reverb, 2: Shimmer
+    std::atomic<bool> fxFreeze;       // Infinite feedback toggle
+
+    // Modulation
+    std::atomic<int>  ampEnvShape;    // 0: Pluck, 1: Keys, 2: Pad
+    std::atomic<int>  modEnvShape;    // 0: Perc, 1: Sweep, 2: Riser
+    std::atomic<int>  lfoWave;        // 0: Sine, 1: Saw, 2: Square, 3: S&H
+    std::atomic<int>  modTarget;      // 0: Cutoff, 1: Morph1, 2: Morph2, 3: Pitch
+    std::atomic<bool> useModEnv;      // True: Mod Env, False: LFO
+
+    // Constructor to safely initialize atomics on boot
+    SynthState(); 
 };
 
-extern SynthState globalState;
+extern SynthState state;
