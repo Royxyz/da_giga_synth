@@ -16,6 +16,9 @@ public:
         phaseInc = hz / sampleRate;
     }
 
+    void resetPhase() {
+        phase = 0.0f;
+    }
 
     float process(int shape) {
         phase += phaseInc;

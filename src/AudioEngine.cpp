@@ -2,13 +2,9 @@
 #include "GlobalState.h"
 #include "I2SOutput.h" 
 #include "VoiceManager.h"
-#include "FloatSVF.h"
 #include "FloatLFO.h"
 #include "PsramAbyss.h"
-#include "FloatEnvelope.h"
-#include "BankAnalog.h" 
-#include "BankGrowl.h"
-#include "BankFM.h"
+#include "Storage.h"
 
 const int I2S_BCK = 4;
 const int I2S_WS = 5;
@@ -18,108 +14,84 @@ const int CONTROL_RATE_DIVIDER = 46;
 
 I2SOutput dac;
 
-// 16-bit arrays
-const int16_t* const BANK_TABLE[3] = { BANK_ANALOG, BANK_GROWL, BANK_FM };
+// Initialized with nullptrs; we will inject the active banks dynamically
+VoiceManager synthVoices(nullptr, nullptr, 4096, 128, AUDIO_RATE);
 
-// INITIALIZED TO 4096 TO MATCH 88.2KHZ RIPS
-VoiceManager synthVoices(BANK_TABLE[0], 4096, 128, AUDIO_RATE); 
-FloatSVF mainFilter;
-FloatLFO masterLFO(AUDIO_RATE / CONTROL_RATE_DIVIDER); 
-FloatEnvelope modEnv(AUDIO_RATE); 
+// Global LFO 1 (The Metronome)
+FloatLFO globalLFO1(AUDIO_RATE / CONTROL_RATE_DIVIDER); 
 PsramAbyss theAbyss;
 
-// 16-BIT BUFFER OVERHAUL
 const int AUDIO_BUFFER_SIZE = 64;
 int16_t i2sBuffer[AUDIO_BUFFER_SIZE * 2]; 
 
-float currentTargetMorph1 = 0.0f;
-float currentTargetCutoff = 2000.0f;
+float currentGlobalLFO1 = 0.0f;
 
-float cachedFilterRes;
-int cachedFilterMode;
-float cachedFxMix;
-int cachedFxMode;
-bool cachedFxFreeze;
+// --- Helper: Resolves UI Bank Index to PSRAM Pointers ---
+int16_t* getBankPtr(int index) {
+    if (index == 0) return activeBank1;
+    if (index == 1) return activeBank2;
+    if (index == 2) return activeBank3;
+    return activeBank1; // Default fallback
+}
 
 void setupAudioEngine() {
-    if (!theAbyss.init()) Serial.println("FATAL: PSRAM Allocation Failed!");
+    if (!initStorage()) Serial.println("FATAL: Storage/PSRAM Init Failed!");
+
+    loadWavetableToBank("/ANALOG_F.BIN", 0);
+    loadWavetableToBank("/BASIC_SH.BIN", 1);
+    loadWavetableToBank("/FM_BRASS.BIN", 2);
+
+    if (!theAbyss.init()) Serial.println("FATAL: Abyss Allocation Failed!");
     if (!dac.begin(I2S_BCK, I2S_WS, I2S_DATA, (uint32_t)AUDIO_RATE)) {
         Serial.println("FATAL: I2S DAC Initialization Failed!");
     }
 }
 
 void updateControl() {
-    
+    // --- 1. Empty the MIDI Queue ---
     MidiEvent ev;
-
     while(xQueueReceive(midiQueue, &ev, 0) == pdTRUE) {
         if (ev.type == 0x90) {
-            modEnv.noteOn(); 
-            synthVoices.noteOn(ev.note);
+            synthVoices.noteOn(ev.note, ev.velocity);
         } else if (ev.type == 0x80) {
-            modEnv.noteOff();
             synthVoices.noteOff(ev.note);
         }
     }
-    
-    float baseMorph1 = state.morph1.load();
-    float baseCutoff = state.filterCutoff.load();
-    float modDepth   = state.modDepth.load();
-    int mTarget      = state.modTarget.load();
-    
-    cachedFilterRes  = state.filterRes.load();
-    cachedFilterMode = state.filterMode.load();
-    cachedFxMix      = state.fxMix.load();
-    cachedFxMode     = state.fxMode.load();
-    cachedFxFreeze   = state.fxFreeze.load();
-    
-    synthVoices.setEnvelopes(state.envAttack.load(), 100.0f, 0.8f, state.envRelease.load());
-    synthVoices.setBank(BANK_TABLE[state.osc1Bank.load()]);
 
-    float modSignal = 0.0f;
-    if (state.useModEnv.load()) {
-        modSignal = modEnv.process();
-    } else {
-        masterLFO.setRate(state.lfoRate.load());
-        modSignal = masterLFO.process(state.lfoWave.load()); 
+    // --- 2. Update Global Modulators ---
+    globalLFO1.setRate(state.lfo1Rate.load());
+    currentGlobalLFO1 = globalLFO1.process(state.lfo1Wave.load());
+
+    // --- 3. Dynamic PSRAM Bank Routing ---
+    int16_t* b1 = getBankPtr(state.osc1Bank.load());
+    int16_t* b2 = getBankPtr(state.osc2Bank.load());
+    if (b1 && b2) {
+        synthVoices.setBanks(b1, b2);
     }
-
-    currentTargetCutoff = baseCutoff;
-    currentTargetMorph1 = baseMorph1;
-
-    if (mTarget == 0) { 
-        currentTargetCutoff += (modSignal * modDepth * 5000.0f);
-        if (currentTargetCutoff < 20.0f) currentTargetCutoff = 20.0f;
-        if (currentTargetCutoff > 20000.0f) currentTargetCutoff = 20000.0f;
-    } 
-    else if (mTarget == 1) { 
-        currentTargetMorph1 += (modSignal * modDepth * 127.0f);
-        if (currentTargetMorph1 > 127.0f) currentTargetMorph1 = 127.0f;
-        if (currentTargetMorph1 < 0.0f) currentTargetMorph1 = 0.0f;
-    }
-
-    mainFilter.setCutoffRes(currentTargetCutoff, cachedFilterRes);
+    
+    // --- 4. Sync Envelopes to the VoiceManager ---
+    synthVoices.setEnvelopes(
+        state.ampEnv[0].load(), state.ampEnv[1].load(), state.ampEnv[2].load(), state.ampEnv[3].load(),
+        state.modEnv1[0].load(), state.modEnv1[1].load(), state.modEnv1[2].load(), state.modEnv1[3].load(),
+        state.modEnv2[0].load(), state.modEnv2[1].load(), state.modEnv2[2].load(), state.modEnv2[3].load()
+    );
 }
 
-// RESTORED TO RETURN INT16
 int16_t updateAudio() {
-    float rawMix = synthVoices.process(currentTargetMorph1);
-    
-    mainFilter.process(rawMix); 
-    
-    float filteredOut = mainFilter.lp;
-    if (cachedFilterMode == 1) filteredOut = mainFilter.bp;
-    if (cachedFilterMode == 2) filteredOut = mainFilter.hp;
+    if (!activeBank1) return 0; 
+    float rawMix = synthVoices.process(currentGlobalLFO1);
 
-    float finalMix = theAbyss.process(
-        filteredOut, 
-        cachedFxMix, 
-        cachedFxMode, 
-        cachedFxFreeze
+    float abyssSendAmt = state.abyssSend.load();
+    float wetAbyss = theAbyss.process(
+        rawMix * abyssSendAmt, 
+        state.fxMode.load(), 
+        state.fxFreeze.load()
     );
 
+    float finalMix = rawMix + wetAbyss;
+
     float safeMix = tanhf(finalMix);
-    return (int16_t)(safeMix * 32760.0f); 
+    return (int16_t)(safeMix * 32760.0f);
 }
 
 void audioTask(void *pvParameters) {
@@ -130,7 +102,7 @@ void audioTask(void *pvParameters) {
 
     for(;;) {
         for(int i = 0; i < AUDIO_BUFFER_SIZE; i++) {
-            
+
             if (controlCounter++ >= CONTROL_RATE_DIVIDER) {
                 updateControl();
                 controlCounter = 0;
@@ -138,21 +110,20 @@ void audioTask(void *pvParameters) {
 
             int16_t out = updateAudio();
             
-            i2sBuffer[i * 2] = out;     
+            i2sBuffer[i * 2] = out;    
             i2sBuffer[(i * 2) + 1] = out; 
         }
 
-        // Blast the 16-bit buffer directly to the DAC
         i2s_channel_write(dac.getTxChan(), i2sBuffer, sizeof(i2sBuffer), &bytesWritten, portMAX_DELAY);
     }
 }
 
 void engineNoteOn(uint8_t note, uint8_t velocity) {
-    MidiEvent ev = {0x90, note};
+    MidiEvent ev = {0x90, note, velocity};
     xQueueSend(midiQueue, &ev, 0);
 }
 
 void engineNoteOff(uint8_t note, uint8_t velocity) {
-    MidiEvent ev = {0x80, note};
+    MidiEvent ev = {0x80, note, velocity};
     xQueueSend(midiQueue, &ev, 0);
 }

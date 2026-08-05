@@ -6,16 +6,16 @@
 const int MUX_Z  = 7;  
 const int MUX_S0 = 8;  
 const int MUX_S1 = 9;  
-const int MUX_S2 = 10; 
+const int MUX_S2 = 46; 
 
 // --- Retained Button Pins ---
 const int BTN_OSC1_BANK = 39; 
-const int BTN_FILT_MODE = 17;
-const int BTN_FX_MODE   = 18;
+const int BTN_OSC2_BANK = 17; // Repurposed
+const int BTN_FILT_MODE = 18; // Repurposed
 const int BTN_FX_FREEZE = 21;
-const int BTN_MOD_ENV   = 45;
-const int BTN_LFO_WAVE  = 47;
-const int BTN_MOD_TARG  = 48;
+const int BTN_LFO1_WAVE = 45; // Repurposed
+const int BTN_LFO2_WAVE = 47; // Repurposed
+const int BTN_LFO1_RST  = 48; // Repurposed
 
 // --- Encoder ---
 const int ENC_A = 14;
@@ -25,8 +25,8 @@ const int ENC_SW = 16;
 const int NUM_BUTTONS = 7;
 Bounce2::Button buttons[NUM_BUTTONS];
 const int BUTTON_PINS[NUM_BUTTONS] = {
-    BTN_OSC1_BANK, BTN_FILT_MODE, BTN_FX_MODE, BTN_FX_FREEZE,
-    BTN_MOD_ENV, BTN_LFO_WAVE, BTN_MOD_TARG
+    BTN_OSC1_BANK, BTN_OSC2_BANK, BTN_FILT_MODE, BTN_FX_FREEZE,
+    BTN_LFO1_WAVE, BTN_LFO2_WAVE, BTN_LFO1_RST
 };
 
 Bounce2::Button btnEnc = Bounce2::Button();
@@ -40,8 +40,8 @@ void IRAM_ATTR encoderISR() {
     int encoded = (MSB << 1) | LSB;
     int sum  = (lastEncoded << 2) | encoded;
 
-    if(sum == 0b1101 || sum == 0b0100 || sum == 0b0010 || sum == 0b1011) encoderPos++;
-    if(sum == 0b1110 || sum == 0b0111 || sum == 0b0001 || sum == 0b1000) encoderPos--;
+    if(sum == 0b1101 || sum == 0b0100 || sum == 0b0010 || sum == 0b1011) {encoderPos = encoderPos + 1;}
+    if(sum == 0b1110 || sum == 0b0111 || sum == 0b0001 || sum == 0b1000) {encoderPos = encoderPos - 1;}
     
     lastEncoded = encoded;
 }
@@ -77,6 +77,8 @@ void initUI() {
 }
 
 float mapfLog(float x, float in_min, float in_max, float out_min, float out_max) {
+    if (x <= in_min) return out_min;
+    if (x >= in_max) return out_max;
     float log_min = log(out_min);
     float log_max = log(out_max);
     float log_val = log_min + (x - in_min) * (log_max - log_min) / (in_max - in_min);
@@ -87,53 +89,63 @@ void uiTask(void *pvParameters) {
     initUI();
     int lastEncPos = 0;
 
-    float emaCutoff = 0.0f;
-    float emaAttack = 0.0f;
-    float emaRelease = 0.0f;
+    // --- EMA Jitter Smoothing Array ---
+    float emaPots[7] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+    const float emaAlpha = 0.15f; // Lower = smoother but slower response
 
     for(;;) {
-        // --- 1. Read Pots (Mux Channels 0-6) ---
-        state.morph1.store(readMux(0) * (127.0f / 4095.0f));
+        // --- 1. Read & Smooth Pots ---
+        for (int i = 0; i < 7; i++) {
+            float rawVal = (float)readMux(i);
+            emaPots[i] = (emaPots[i] * (1.0f - emaAlpha)) + (rawVal * emaAlpha);
+        }
+
+        // --- 2. Map Smoothed Values to Hardware Macros ---
         
-        // Pots 1 & 2: Env Attack & Release (Log curve from 1ms to 2000ms)
-        float rawCutoff = readMux(3);
-        emaCutoff = (emaCutoff * 0.95f) + (rawCutoff * 0.05f); // Heavy lowpass smoothing
-        state.filterCutoff.store(mapfLog(emaCutoff, 0.0f, 4095.0f, 20.0f, 18000.0f));
+        // Pot 0: Filter Cutoff (Logarithmic)
+        // Squeezed the max ADC value down to 3100 to guarantee it hits 20kHz at 2.6V
+        state.filterCutoff.store(mapfLog(emaPots[0], 150.0f, 3100.0f, 20.0f, 20000.0f));    
+        
+        // Pot 1: Filter Resonance (Linear 0.0 to 0.95)
+        state.filterRes.store(emaPots[1] * (0.95f / 4095.0f));
+        
+        // Pot 2: Osc 1 Base Morph (Linear 0.0 to 127.9 for 128 frames)
+        state.osc1BaseMorph.store(emaPots[2] * (127.9f / 3900.0f));
+        
+        // Pot 3: Osc 2 Base Morph (Linear 0.0 to 127.9 for 128 frames)
+        state.osc2BaseMorph.store(emaPots[3] * (127.9f / 4095.0f));
+        
+        // Pot 4: LFO 1 Rate (Global Metronome, Logarithmic 0.1Hz to 40.0Hz)
+        state.lfo1Rate.store(mapfLog(emaPots[4], 0.0f, 4095.0f, 0.1f, 40.0f));
+        
+        // Pot 5: Abyss Reverb Send (Linear 0.0 to 1.0)
+        state.abyssSend.store(emaPots[5] / 4095.0f);
+        
+        // Pot 6: Oscillator Mix (Linear 0.0 to 1.0)
+        state.oscMix.store(emaPots[6] / 4095.0f);
 
-        float rawAttack = readMux(1);
-        emaAttack = (emaAttack * 0.9f) + (rawAttack * 0.1f);
-        state.envAttack.store(mapfLog(emaAttack, 0.0f, 4095.0f, 1.0f, 2000.0f));
-
-        float rawRelease = readMux(2);
-        emaRelease = (emaRelease * 0.9f) + (rawRelease * 0.1f);
-        state.envRelease.store(mapfLog(emaRelease, 0.0f, 4095.0f, 1.0f, 2000.0f));
-
-        state.filterRes.store(readMux(4) * (0.95f / 4095.0f));
-        state.modDepth.store(readMux(5) / 4095.0f);
-        state.fxMix.store(readMux(6) / 4095.0f);
-
-        // --- 2. Update Buttons ---
+        // --- 3. Update Buttons ---
         for (int i = 0; i < NUM_BUTTONS; i++) buttons[i].update();
         btnEnc.update();
 
-        // --- 3. Process Button Presses ---
         if (buttons[0].pressed()) state.osc1Bank.store((state.osc1Bank.load() + 1) % 3);
-        if (buttons[1].pressed()) state.filterMode.store((state.filterMode.load() + 1) % 3);
-        if (buttons[2].pressed()) state.fxMode.store((state.fxMode.load() + 1) % 3);
-        state.fxFreeze.store(buttons[3].isPressed()); 
-        
-        if (buttons[4].pressed()) state.modEnvShape.store((state.modEnvShape.load() + 1) % 3);
-        if (buttons[5].pressed()) state.lfoWave.store((state.lfoWave.load() + 1) % 4);
-        if (buttons[6].pressed()) state.modTarget.store((state.modTarget.load() + 1) % 3); // Reduced to 3 targets
+        if (buttons[1].pressed()) state.osc2Bank.store((state.osc2Bank.load() + 1) % 3);
+        if (buttons[2].pressed()) state.filterMode.store((state.filterMode.load() + 1) % 3);
 
-        // --- 4. Encoder Logic ---
-        if (btnEnc.pressed()) state.useModEnv.store(!state.useModEnv.load());
+        if (buttons[3].pressed()) state.fxFreeze.store(!state.fxFreeze.load()); 
+        
+        if (buttons[4].pressed()) state.lfo1Wave.store((state.lfo1Wave.load() + 1) % 4);
+        if (buttons[5].pressed()) state.lfo2Wave.store((state.lfo2Wave.load() + 1) % 4);
+  
+        if (buttons[6].pressed()) state.fxFreeze.store(false); 
+
+        if (btnEnc.pressed()) state.fxMode.store((state.fxMode.load() + 1) % 2); // Toggle Abyss Mode
         
         if (encoderPos != lastEncPos) {
-            float newRate = state.lfoRate.load() + (encoderPos > lastEncPos ? 0.5f : -0.5f);
+            float newRate = state.lfo2Rate.load() + (encoderPos > lastEncPos ? 0.2f : -0.2f);
             if (newRate < 0.1f) newRate = 0.1f;
             if (newRate > 40.0f) newRate = 40.0f;
-            state.lfoRate.store(newRate);
+            state.lfo2Rate.store(newRate);
             lastEncPos = encoderPos;
         }
 

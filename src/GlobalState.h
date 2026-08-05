@@ -3,35 +3,50 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 
-// --- Thread-Safe MIDI Queue Structure ---
 struct MidiEvent { 
     uint8_t type; 
     uint8_t note; 
+    uint8_t velocity; // Added velocity tracking
 };
 
 extern QueueHandle_t midiQueue;
 
-// --- Global UI Parameters ---
 struct SynthState {
-    // --- 7 Pots & Encoder (Continuous Floats) ---
-    std::atomic<float> morph1;       // 0.0f to 127.0f (Frames - Upgraded for 128 slices)
-    std::atomic<float> envAttack;    // 1.0f to 2000.0f (ms)
-    std::atomic<float> envRelease;   // 1.0f to 2000.0f (ms)
-    std::atomic<float> filterCutoff; // 20.0f to 20000.0f (Hz)
-    std::atomic<float> filterRes;    // 0.0f to 0.99f (Peak)
-    std::atomic<float> modDepth;     // 0.0f to 1.0f
-    std::atomic<float> fxMix;        // 0.0f to 1.0f (Dry/Wet)
-    std::atomic<float> lfoRate;      // 0.1f to 40.0f (Hz)
+    // --- The Modulation Matrix (6 Sources x 5 Destinations = 30 Nodes) ---
+    // SOURCES: 0=Velocity, 1=AmpEnv, 2=ModEnv1, 3=ModEnv2, 4=LFO1(Global), 5=LFO2(Poly)
+    // DESTINATIONS: 0=Amp, 1=Pitch, 2=Osc1Pos, 3=Osc2Pos, 4=Cutoff
+    // Index = (Source * 5) + Destination
+    std::atomic<float> modMatrix[30];
 
-    // --- 7 Active Buttons (Discrete States) ---
-    std::atomic<int>  osc1Bank;       // 0: Analog, 1: Growl, 2: FM
-    std::atomic<int>  filterMode;     // 0: LP, 1: BP, 2: HP
-    std::atomic<int>  fxMode;         // 0: Tape, 1: Reverb, 2: Shimmer
-    std::atomic<bool> fxFreeze;       // Infinite feedback toggle
-    std::atomic<int>  modEnvShape;    // 0: Perc, 1: Sweep, 2: Riser
-    std::atomic<int>  lfoWave;        // 0: Sine, 1: Saw, 2: Square, 3: S&H
-    std::atomic<int>  modTarget;      // 0: Cutoff, 1: Morph1, 2: Pitch
-    std::atomic<bool> useModEnv;      // True: Mod Env, False: LFO
+    // --- Oscillators ---
+    std::atomic<int>   osc1Bank;
+    std::atomic<int>   osc2Bank;
+    std::atomic<float> osc1BaseMorph; // 0 to 128.0f
+    std::atomic<float> osc2BaseMorph; // 0 to 128.0f
+    std::atomic<float> osc1Coarse;    // Semitones
+    std::atomic<float> osc2Coarse;    // Semitones
+    std::atomic<float> oscMix;        // 0.0f (100% Osc1) to 1.0f (100% Osc2)
+
+    // --- Envelopes (A, D, S, R) ---
+    std::atomic<float> ampEnv[4];
+    std::atomic<float> modEnv1[4];
+    std::atomic<float> modEnv2[4];
+
+    // --- LFOs ---
+    std::atomic<float> lfo1Rate; // Global
+    std::atomic<int>   lfo1Wave;
+    std::atomic<float> lfo2Rate; // Polyphonic
+    std::atomic<int>   lfo2Wave;
+
+    // --- Filter ---
+    std::atomic<float> filterCutoff; // Base Hz
+    std::atomic<float> filterRes;
+    std::atomic<int>   filterMode;   // 0: LP, 1: BP, 2: HP
+    
+    // --- FX (Kept minimal for the Abyss) ---
+    std::atomic<bool> fxFreeze;       
+    std::atomic<int>  fxMode;         
+    std::atomic<float> abyssSend;
 
     SynthState(); 
 };

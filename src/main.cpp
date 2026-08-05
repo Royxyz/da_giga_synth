@@ -1,41 +1,45 @@
 #include <Arduino.h>
 #include "AudioEngine.h"
 #include "UI.h"
-#include "DummySequencer.h"
-#include "GlobalState.h" // Required to initialize midiQueue
+#include "Sequencer.h" 
+#include "GlobalState.h"
+#include "SynthNetwork.h"
 
+TaskHandle_t networkTaskHandle;
 TaskHandle_t uiTaskHandle;
 TaskHandle_t midiTaskHandle;
 TaskHandle_t audioTaskHandle; 
 
-DummySequencer sequencer;
+Sequencer sequencer; 
 
 void midiTask(void *pvParameters) {
     for(;;) {
         sequencer.update();
-        vTaskDelay(pdMS_TO_TICKS(2)); 
+        vTaskDelay(pdMS_TO_TICKS(1)); 
     }
 }
 
 void setup() {
     Serial.begin(115200);
+    delay(3000);
 
-    // Initialize the lock-free queue for MIDI events before binding components
-    // 32 slots is plenty for simultaneous polyphonic chord strikes
+
     midiQueue = xQueueCreate(32, sizeof(MidiEvent));
 
     sequencer.setCallbacks(engineNoteOn, engineNoteOff);
     sequencer.begin();
 
-    // Grouping all the UI and MIDI on Core 0!
     xTaskCreatePinnedToCore(uiTask, "UI_Task", 4096, NULL, 1, &uiTaskHandle, 0);
     xTaskCreatePinnedToCore(midiTask, "MIDI_Task", 2048, NULL, 2, &midiTaskHandle, 0);
 
-    // Audio Engine gets Core 1 entirely to itself.
+    xTaskCreatePinnedToCore(networkTask, "Network_Task", 8192, NULL, 1, &networkTaskHandle, 0);
+
+
+
+
     xTaskCreatePinnedToCore(audioTask, "Audio_Task", 8192, NULL, 3, &audioTaskHandle, 1);
 }
 
 void loop() {
-    // Delete the default Arduino loop task so it doesn't waste CPU cycles
     vTaskDelete(NULL); 
 }

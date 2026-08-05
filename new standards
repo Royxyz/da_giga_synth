@@ -1,0 +1,55 @@
+# Context: ESP32-S3 Hybrid Hardware Synthesizer - Flask Backend & Dashboard Design
+
+## 1. Project Overview
+We are building a hybrid hardware/software synthesizer. The hardware is an ESP32-S3 (N16R8) handling all real-time DSP (Wavetable morphing, SVF Filters, FX Chain, PSRAM Abyss Reverb) and physical UI (7 potentiometers, encoders, buttons). 
+
+We are offloading the complex visual configuration to a Python Flask web server. The ESP32 is a WebSocket client connecting to the Flask WebSocket server. 
+
+## 2. The Standard Binary Telemetry Packet (ESP32 -> Flask)
+The ESP32 broadcasts a packed binary struct at ~30 FPS over WebSockets. This contains the state of all 7 physical pots and the internal DSP parameters, scaled for human readability.
+
+**Python `struct.unpack` format:** `<11f2B` (46 bytes total)
+
+| Index | Parameter Name | C++ Type | Python Type | Unit / Range | Description |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| 0 | `morph1` | `float` | `float` | **0 - 100%** | Wavetable frame morph position |
+| 1 | `envAttack` | `float` | `float` | **1 - 2000 ms** | Amp envelope attack time |
+| 2 | `envRelease` | `float` | `float` | **1 - 2000 ms** | Amp envelope release time |
+| 3 | `filterCutoff` | `float` | `float` | **20 - 20000 Hz**| Main SVF filter cutoff frequency |
+| 4 | `filterRes` | `float` | `float` | **0 - 100%** | Main SVF filter resonance |
+| 5 | `modDepth` | `float` | `float` | **0 - 100%** | Global LFO/Env modulation depth |
+| 6 | `lfoRate` | `float` | `float` | **0.1 - 40 Hz** | Master LFO rate |
+| 7 | `distDrive` | `float` | `float` | **0 - 100%** | Insert FX Distortion Drive |
+| 8 | `distMix` | `float` | `float` | **0 - 100%** | Insert FX Distortion Dry/Wet |
+| 9 | `ottDepth` | `float` | `float` | **0 - 100%** | Insert FX OTT Compressor Depth |
+| 10| `abyssSend` | `float` | `float` | **0 - 100%** | Aux Send to PSRAM Reverb |
+| 11| `distMode` | `uint8_t` | `int` | **0, 1, 2** | 0:Tube, 1:Foldback, 2:Hardclip |
+| 12| `currentStep`| `uint8_t` | `int` | **0 - 63** | Active sequencer step |
+
+## 3. WebSocket Command Standards (Flask -> ESP32)
+The web dashboard sends JSON strings through Flask to control the synth. 
+
+*   **Continuous Parameters (Floats):**
+    `{"type": "param", "target": "distDrive", "val": 0.5}`
+        *(Targets: distDrive, distMix, ottDepth, abyssSend. Note: Values sent TO the ESP32 must be normalized 0.0 to 1.0)*
+        *   **Discrete Buttons (Integers):** 
+            `{"type": "button", "target": "distMode", "val": 1}`
+                *(Targets: fxFreeze, osc1Bank, filterMode, fxMode, modTarget, lfoWave, distMode)*
+                *   **Wavetable Hot-Swapping:** 
+                    `{"type": "load_wavetable", "file": "/GROWL.BIN", "bank": 0}`
+                    *   **Sequencer Sync:** 
+                        `{"type": "sequence", "numSteps": 16, "steps": [ [{"n": 36, "l": 1}, {"n": 48, "l": 2}], [], [{"n": 39, "l": 1}], ... ]}`
+                            *(n = MIDI note, l = gate length in steps)*
+
+                            ## 4. HTTP Endpoints (Hosted on ESP32)
+                            The Flask server acts as an HTTP client to manage the ESP32's SD card.
+                            *   `GET http://<ESP32_IP>/manifest` : Returns the `.BIN` wavetable manifest.
+                            *   `POST http://<ESP32_IP>/upload` : Accepts a chunked file stream to save `.BIN` files directly to the SD card.
+
+                            ## 5. Flask Dashboard Requirements
+                            1.  **Backend (`app.py`):** Serve the UI, handle WebSocket bi-directional routing (unpacking the 46-byte struct), and proxy file uploads via HTTP POST.
+                            2.  **Frontend (UI):** 
+                                *   **Telemetry Panel:** Read-only visualizers (dials/numbers) for the 7 physical pots.
+                                    *   **FX Dashboard:** Sliders and toggles to control the internal FX chain (Distortion, OTT, Abyss Send).
+                                        *   **Piano Roll Sequencer:** An interactive grid with dynamic lengths. 
+                                            *   **Wavetable Manager:** Dropdowns populated by the SD card manifest to hot-swap banks, and an upload button.

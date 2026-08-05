@@ -9,11 +9,18 @@ private:
     
 public:
     float lp = 0.0f, hp = 0.0f, bp = 0.0f;
+    
+        void reset() {
+            ic1eq = 0.0f;
+            ic2eq = 0.0f;
+        }
+
 
         void setCutoffRes(float cutoff, float res, float sampleRate = 48000.0f) {
         if (cutoff > sampleRate / 2.5f) cutoff = sampleRate / 2.5f;
         if (res > 0.99f) res = 0.99f;
 
+        
         g = tanf(PI * cutoff / sampleRate);
         k = 2.0f - (2.0f * res);
         a1 = 1.0f / (1.0f + g * (g + k));

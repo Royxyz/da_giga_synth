@@ -17,6 +17,11 @@ public:
         setADSR(10.0f, 100.0f, 0.5f, 200.0f); 
     }
 
+    void reset() {
+        output = 0.0f;
+        state = IDLE;
+    }
+
     void setADSR(float a_ms, float d_ms, float s_lvl, float r_ms) {
 
         if (a_ms < 1.0f) a_ms = 1.0f;
