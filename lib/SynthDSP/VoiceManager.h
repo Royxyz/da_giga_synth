@@ -13,8 +13,8 @@ struct Voice {
     FloatWavetable osc1;
     FloatEnvelope ampEnv;
     int currentNote = -1;
+    uint32_t noteOnTime = 0; // Tracks the age of the note for smart stealing
 
-    // Upgraded to int16_t*
     Voice(const int16_t* b1, int size, int frames)
         : osc1(b1, size, frames) {}
 };
@@ -25,9 +25,9 @@ private:
     int tableSize;
     int numFrames;
     float sampleRate; 
+    uint32_t timeCounter = 0; // Global counter to track voice age
 
 public:
-    // Upgraded to int16_t*
     VoiceManager(const int16_t* bank1, int size, int frames, float sr = 48000.0f) {
         tableSize = size;
         numFrames = frames;
@@ -37,7 +37,6 @@ public:
         }
     }
 
-    // Upgraded to int16_t*
     void setBank(const int16_t* bank1) {
         for(int i = 0; i < MAX_VOICES; i++) {
             voices[i]->osc1.setTable(bank1, tableSize, numFrames);
@@ -51,14 +50,42 @@ public:
     }
 
     void noteOn(uint8_t note) {
+        timeCounter++;
         int voiceIdx = -1;
-        for(int i = 0; i < MAX_VOICES; i++) {
-            if(!voices[i]->ampEnv.isActive()) { voiceIdx = i; break; }
-        }
-        if(voiceIdx == -1) voiceIdx = 0; // Simple stealing
 
+        // 1. Check if this exact note is already playing (prevent phase-buildup)
+        for(int i = 0; i < MAX_VOICES; i++) {
+            if(voices[i]->currentNote == note) { 
+                voiceIdx = i; 
+                break; 
+            }
+        }
+
+        // 2. If not, find a completely silent voice
+        if(voiceIdx == -1) {
+            for(int i = 0; i < MAX_VOICES; i++) {
+                if(!voices[i]->ampEnv.isActive()) { 
+                    voiceIdx = i; 
+                    break; 
+                }
+            }
+        }
+
+        // 3. If all voices are busy, steal the oldest one
+        if(voiceIdx == -1) {
+            uint32_t oldestTime = 0xFFFFFFFF;
+            for(int i = 0; i < MAX_VOICES; i++) {
+                if(voices[i]->noteOnTime < oldestTime) {
+                    oldestTime = voices[i]->noteOnTime;
+                    voiceIdx = i;
+                }
+            }
+        }
+
+        // Lock in the note and trigger
         float freq1 = fast_mtof((float)note);
         voices[voiceIdx]->currentNote = note;
+        voices[voiceIdx]->noteOnTime = timeCounter;
         voices[voiceIdx]->osc1.setFreq(freq1, sampleRate);
         voices[voiceIdx]->ampEnv.noteOn();
     }
@@ -67,7 +94,8 @@ public:
         for(int i = 0; i < MAX_VOICES; i++) {
             if(voices[i]->currentNote == note) {
                 voices[i]->ampEnv.noteOff();
-                voices[i]->currentNote = -1; 
+                // We do NOT clear currentNote here. 
+                // We let it fade out naturally so we can re-trigger it if needed.
             }
         }
     }
@@ -79,8 +107,10 @@ public:
             if(voices[i]->ampEnv.isActive()) {
                 float raw1 = voices[i]->osc1.next(morph1);
                 float env = voices[i]->ampEnv.process();
-                
                 rawSum += raw1 * env;
+            } else {
+                // Envelope has completely finished fading out
+                voices[i]->currentNote = -1; 
             }
         }
         

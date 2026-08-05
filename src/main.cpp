@@ -2,10 +2,11 @@
 #include "AudioEngine.h"
 #include "UI.h"
 #include "DummySequencer.h"
+#include "GlobalState.h" // Required to initialize midiQueue
 
 TaskHandle_t uiTaskHandle;
 TaskHandle_t midiTaskHandle;
-TaskHandle_t audioTaskHandle; // <--- ADDED
+TaskHandle_t audioTaskHandle; 
 
 DummySequencer sequencer;
 
@@ -18,6 +19,10 @@ void midiTask(void *pvParameters) {
 
 void setup() {
     Serial.begin(115200);
+
+    // Initialize the lock-free queue for MIDI events before binding components
+    // 32 slots is plenty for simultaneous polyphonic chord strikes
+    midiQueue = xQueueCreate(32, sizeof(MidiEvent));
 
     sequencer.setCallbacks(engineNoteOn, engineNoteOff);
     sequencer.begin();

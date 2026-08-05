@@ -87,16 +87,27 @@ void uiTask(void *pvParameters) {
     initUI();
     int lastEncPos = 0;
 
+    float emaCutoff = 0.0f;
+    float emaAttack = 0.0f;
+    float emaRelease = 0.0f;
+
     for(;;) {
         // --- 1. Read Pots (Mux Channels 0-6) ---
-        state.morph1.store(readMux(0) * (7.0f / 4095.0f));
+        state.morph1.store(readMux(0) * (127.0f / 4095.0f));
         
         // Pots 1 & 2: Env Attack & Release (Log curve from 1ms to 2000ms)
-        state.envAttack.store(mapfLog(readMux(1), 0.0f, 4095.0f, 1.0f, 2000.0f));
-        state.envRelease.store(mapfLog(readMux(2), 0.0f, 4095.0f, 1.0f, 2000.0f));
-        
         float rawCutoff = readMux(3);
-        state.filterCutoff.store(mapfLog(rawCutoff, 0.0f, 4095.0f, 20.0f, 18000.0f));
+        emaCutoff = (emaCutoff * 0.95f) + (rawCutoff * 0.05f); // Heavy lowpass smoothing
+        state.filterCutoff.store(mapfLog(emaCutoff, 0.0f, 4095.0f, 20.0f, 18000.0f));
+
+        float rawAttack = readMux(1);
+        emaAttack = (emaAttack * 0.9f) + (rawAttack * 0.1f);
+        state.envAttack.store(mapfLog(emaAttack, 0.0f, 4095.0f, 1.0f, 2000.0f));
+
+        float rawRelease = readMux(2);
+        emaRelease = (emaRelease * 0.9f) + (rawRelease * 0.1f);
+        state.envRelease.store(mapfLog(emaRelease, 0.0f, 4095.0f, 1.0f, 2000.0f));
+
         state.filterRes.store(readMux(4) * (0.95f / 4095.0f));
         state.modDepth.store(readMux(5) / 4095.0f);
         state.fxMix.store(readMux(6) / 4095.0f);

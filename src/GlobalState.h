@@ -1,9 +1,20 @@
 #pragma once
 #include <atomic>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 
+// --- Thread-Safe MIDI Queue Structure ---
+struct MidiEvent { 
+    uint8_t type; 
+    uint8_t note; 
+};
+
+extern QueueHandle_t midiQueue;
+
+// --- Global UI Parameters ---
 struct SynthState {
     // --- 7 Pots & Encoder (Continuous Floats) ---
-    std::atomic<float> morph1;       // 0.0f to 7.0f (Frames)
+    std::atomic<float> morph1;       // 0.0f to 127.0f (Frames - Upgraded for 128 slices)
     std::atomic<float> envAttack;    // 1.0f to 2000.0f (ms)
     std::atomic<float> envRelease;   // 1.0f to 2000.0f (ms)
     std::atomic<float> filterCutoff; // 20.0f to 20000.0f (Hz)

@@ -13,7 +13,7 @@
 const int I2S_BCK = 4;
 const int I2S_WS = 5;
 const int I2S_DATA = 6;
-const float AUDIO_RATE = 48000.0f;
+const float AUDIO_RATE = 44100.0f;
 const int CONTROL_RATE_DIVIDER = 46; 
 
 I2SOutput dac;
@@ -22,7 +22,7 @@ I2SOutput dac;
 const int16_t* const BANK_TABLE[3] = { BANK_ANALOG, BANK_GROWL, BANK_FM };
 
 // INITIALIZED TO 4096 TO MATCH 88.2KHZ RIPS
-VoiceManager synthVoices(BANK_TABLE[0], 4096, 16, AUDIO_RATE); 
+VoiceManager synthVoices(BANK_TABLE[0], 4096, 128, AUDIO_RATE); 
 FloatSVF mainFilter;
 FloatLFO masterLFO(AUDIO_RATE / CONTROL_RATE_DIVIDER); 
 FloatEnvelope modEnv(AUDIO_RATE); 
@@ -49,6 +49,19 @@ void setupAudioEngine() {
 }
 
 void updateControl() {
+    
+    MidiEvent ev;
+
+    while(xQueueReceive(midiQueue, &ev, 0) == pdTRUE) {
+        if (ev.type == 0x90) {
+            modEnv.noteOn(); 
+            synthVoices.noteOn(ev.note);
+        } else if (ev.type == 0x80) {
+            modEnv.noteOff();
+            synthVoices.noteOff(ev.note);
+        }
+    }
+    
     float baseMorph1 = state.morph1.load();
     float baseCutoff = state.filterCutoff.load();
     float modDepth   = state.modDepth.load();
@@ -80,8 +93,8 @@ void updateControl() {
         if (currentTargetCutoff > 20000.0f) currentTargetCutoff = 20000.0f;
     } 
     else if (mTarget == 1) { 
-        currentTargetMorph1 += (modSignal * modDepth * 7.0f);
-        if (currentTargetMorph1 > 7.0f) currentTargetMorph1 = 7.0f;
+        currentTargetMorph1 += (modSignal * modDepth * 127.0f);
+        if (currentTargetMorph1 > 127.0f) currentTargetMorph1 = 127.0f;
         if (currentTargetMorph1 < 0.0f) currentTargetMorph1 = 0.0f;
     }
 
@@ -114,17 +127,8 @@ void audioTask(void *pvParameters) {
     
     int controlCounter = 0; 
     size_t bytesWritten;
-    
-    // Start at 500 so it DOES NOT print on boot
-    static int printCount = 500; 
 
     for(;;) {
-        // --- NEW: Wait for Python to send a character ---
-        if (Serial.available()) {
-            while(Serial.available()) Serial.read(); // Clear the incoming buffer
-            printCount = 0; // Resetting to 0 triggers the 500-sample dump
-        }
-
         for(int i = 0; i < AUDIO_BUFFER_SIZE; i++) {
             
             if (controlCounter++ >= CONTROL_RATE_DIVIDER) {
@@ -134,26 +138,21 @@ void audioTask(void *pvParameters) {
 
             int16_t out = updateAudio();
             
-            // Only prints when Python asks for it
-            if (printCount < 5000) {
-                Serial.println(out);
-                printCount++;
-            }
-
             i2sBuffer[i * 2] = out;     
             i2sBuffer[(i * 2) + 1] = out; 
         }
 
-        i2s_channel_write(dac.tx_chan, i2sBuffer, sizeof(i2sBuffer), &bytesWritten, portMAX_DELAY);
+        // Blast the 16-bit buffer directly to the DAC
+        i2s_channel_write(dac.getTxChan(), i2sBuffer, sizeof(i2sBuffer), &bytesWritten, portMAX_DELAY);
     }
 }
 
 void engineNoteOn(uint8_t note, uint8_t velocity) {
-    modEnv.noteOn(); 
-    synthVoices.noteOn(note);
+    MidiEvent ev = {0x90, note};
+    xQueueSend(midiQueue, &ev, 0);
 }
 
 void engineNoteOff(uint8_t note, uint8_t velocity) {
-    modEnv.noteOff();
-    synthVoices.noteOff(note);
+    MidiEvent ev = {0x80, note};
+    xQueueSend(midiQueue, &ev, 0);
 }
